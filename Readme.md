@@ -13,7 +13,7 @@ We split the code into two parts:
 
 1. libscmpp.h is a library containing utility functions to create and train
    two-layer neural networks.
-2. lowdim.cpp contains the actual experiments. It offers many parameters and
+2. hmf.cpp contains the actual experiments. It offers many parameters and
    flags to control experiments.
 
 Compilation
@@ -21,7 +21,7 @@ Compilation
 
 To compile locally, simply type
 ```
-g++ --std=c++11 -I. lowdim.cpp -o lowdim.exe -O3 -larmadillo
+g++ --std=c++11 -I. hmf.cpp -o hmf.exe -O3 -larmadillo
 ``` 
 using the compiler of your choice. This assumes that you have installed the [Armadillo
 library](http://arma.sourceforge.net) on your machine.
@@ -30,7 +30,7 @@ Usage
 -----
 
 ```
-lowdim.exe [-h] [--g G] [-N N] [-J J] [-M M] [-K K] [--lr LR]
+hmf.exe [-h] [--g G] [-N N] [-J J] [-M M] [-K K] [--lr LR]
                      [--ts TS] [--classify] [--steps STEPS] [--uniform A]
                      [--both] [--normalise] [--quiet] [-s SEED]
 
