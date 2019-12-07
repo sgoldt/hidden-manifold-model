@@ -1,5 +1,5 @@
 /**
- * File:    hmf.cpp
+ * File:    hmm.cpp
  *
  * Author:  Sebastian Goldt <goldt.sebastian@gmail.com>
  *
@@ -38,7 +38,7 @@ const int NUM_TEST_SAMPLES = 50000;
 const char * usage = R"USAGE(
 Training independent committee machines on the same dataset.
 
-usage: hmf.exe [-h] [--g G] [-N N] [-J J] [-M M] [-K K] [--lr LR]
+usage: hmm.exe [-h] [--g G] [-N N] [-J J] [-M M] [-K K] [--lr LR]
                      [--ts TS] [--classify] [--steps STEPS] [--uniform A]
                      [--both] [--normalise] [--quiet] [-s SEED]
 
@@ -490,7 +490,7 @@ int main(int argc, char* argv[]) {
   char* uniform_desc;
   asprintf(&uniform_desc, "u%g_", uniform);
   char* log_fname;
-  asprintf(&log_fname, "hmf_%s_%s_%s_%sscenario%d%s%s_J%d_%s%sN%d_M%d_K%d_ts%g_lr%g_i%d_s%d.dat",
+  asprintf(&log_fname, "hmm_%s_%s_%s_%sscenario%d%s%s_J%d_%s%sN%d_M%d_K%d_ts%g_lr%g_i%d_s%d.dat",
            f_name, g_name, (both ? "both" : "1st"), normalise ? "norm_" : "",
            scenario, do_classify ? "class" : "", random ? "r" : "", J, 
            (uniform > 0 ? uniform_desc : ""), (mix > 0 ? "mix_" : ""), N, M, K, ts, lr, init, seed);
