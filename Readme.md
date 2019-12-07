@@ -34,4 +34,4 @@ References
 ----------
 
 [1] S. Goldt, M. Mézard, F. Krzakala and L. Zdeborová: Modelling the influence of
-data structure on learning in neural networks (arXiv identifier to follow)
+data structure on learning in neural networks [arXiv:1909.11500](https://arxiv.org/abs/1909.11500)
