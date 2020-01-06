@@ -210,8 +210,6 @@ double I4_lin(mat& C) {
  *     hidden unit-to-output weights of the student
  * lr : scalar
  *     learning rate of the first layer
- * lr2 : scalar
- *     learning rate of the second layer
  * wd : scalar
  *     weight decay constant
  * sigma : double
@@ -220,8 +218,9 @@ double I4_lin(mat& C) {
 void propagate(double duration, double dt, double& time,
                mat& Sigma, mat& W, mat& Q, mat& R, mat& T, mat& tildeT,
                vec& A, vec& v, cube& sigma, cube& r, vec& rhos,
-               double(*I3)(mat&), double(*I4)(mat&),
-               double delta, double lr, double fu2, double ufu, double ufu_2) {
+               double(*I2)(mat&), double(*I3)(mat&), double(*I4)(mat&),
+               double delta, double lr, double fu2, double ufu, double ufu_2,
+               bool both) {
   int K = R.n_rows;
   int M = R.n_cols;
 
@@ -255,36 +254,36 @@ void propagate(double duration, double dt, double& time,
 
           // first line
           update_C3(C3, C, k, k, j);
-          drkm -= d % rkm * Q(j, j) * I3(C3) / det;
+          drkm -= d % rkm * v(k) * v(j) * Q(j, j) * I3(C3) / det;
           update_C3(C3, C, k, j, j);
-          drkm += d % rkm * Q(k, j) * I3(C3) / det;
+          drkm += d % rkm * v(k) * v(j) * Q(k, j) * I3(C3) / det;
 
           // second line
           vec rjm = (vec) r.tube(j, m);
           update_C3(C3, C, k, j, j);
-          drkm -= d % rjm * Q(k, k) * I3(C3) / det;
+          drkm -= d % rjm * v(k) * v(j) * Q(k, k) * I3(C3) / det;
           update_C3(C3, C, k, k, j);
-          drkm += d % rjm * Q(k, j) * I3(C3) / det;
+          drkm += d % rjm * v(k) * v(j) * Q(k, j) * I3(C3) / det;
         }
 
         // third line
         update_C3(C3, C, k, k, k);
-        drkm -= d % rkm / Q(k, k) * I3(C3);
+        drkm -= d % rkm * v(k) * v(k) / Q(k, k) * I3(C3);
 
         for (int n = 0; n < M; n++) {
           double det = Q(k, k) * T(n, n) - pow(R(k, n), 2);
 
           // fourth line
           update_C3(C3, C, k, k, K + n);
-          drkm += d % rkm * T(n, n) * I3(C3) / det;
+          drkm += d % rkm * v(k) * A(n) * T(n, n) * I3(C3) / det;
           update_C3(C3, C, k, K + n, K + n);
-          drkm -= d % rkm * R(k, n) * I3(C3) / det;
+          drkm -= d % rkm * v(k) * A(n) * R(k, n) * I3(C3) / det;
 
           // fifth line
           update_C3(C3, C, k, K + n, K + n);
-          drkm += ufu * rhos * tildeT(n, m) * Q(k, k) * I3(C3) / det;
+          drkm += ufu * rhos * v(k) * A(n) * tildeT(n, m) * Q(k, k) * I3(C3) / det;
           update_C3(C3, C, k, k, K + n);
-          drkm -= ufu * rhos * tildeT(n, m) * R(k, n) * I3(C3) / det;
+          drkm -= ufu * rhos * v(k) * A(n) * tildeT(n, m) * R(k, n) * I3(C3) / det;
         }
 
         dr.tube(k, m) = dt * lr / delta * drkm;
@@ -304,37 +303,37 @@ void propagate(double duration, double dt, double& time,
 
           // first line
           update_C3(C3, C, k, k, j);
-          dskl -= d % skl * Q(j, j) * I3(C3) / det;
+          dskl -= d % skl * v(k) * v(j) * Q(j, j) * I3(C3) / det;
           update_C3(C3, C, k, j, j);
-          dskl += d % skl * Q(k, j) * I3(C3) / det;
+          dskl += d % skl * v(k) * v(j) * Q(k, j) * I3(C3) / det;
 
           // second line
           vec sjl = (vec) sigma.tube(j, l);
           update_C3(C3, C, k, j, j);
-          dskl -= d % sjl * Q(k, k) * I3(C3) / det;
+          dskl -= d % sjl * v(k) * v(j) * Q(k, k) * I3(C3) / det;
           update_C3(C3, C, k, k, j);
-          dskl += d % sjl * Q(k, j) * I3(C3) / det;
+          dskl += d % sjl * v(k) * v(j) * Q(k, j) * I3(C3) / det;
         }
 
         // third line
         update_C3(C3, C, k, k, k);
-        dskl -= d % skl / Q(k, k) * I3(C3);
+        dskl -= d % skl * v(k) * v(k) / Q(k, k) * I3(C3);
 
         for (int n = 0; n < M; n++) {
           double det = Q(k, k) * T(n, n) - pow(R(k, n), 2);
 
           // fourth line
           update_C3(C3, C, k, k, K + n);
-          dskl += d % skl * T(n, n) * I3(C3) / det;
+          dskl += d % skl * v(k) * A(n) * T(n, n) * I3(C3) / det;
           update_C3(C3, C, k, K + n, K + n);
-          dskl -= d % skl * R(k, n) * I3(C3) / det;
+          dskl -= d % skl * v(k) * A(n) * R(k, n) * I3(C3) / det;
 
           // fifth line
           vec rln = (vec) r.tube(l, n);
           update_C3(C3, C, k, K + n, K + n);
-          dskl += ufu * rhos % rln * Q(k, k) * I3(C3) / det;
+          dskl += ufu * rhos % rln * v(k) * A(n) * Q(k, k) * I3(C3) / det;
           update_C3(C3, C, k, k, K + n);
-          dskl -= ufu * rhos % rln * R(k, n) * I3(C3) / det;
+          dskl -= ufu * rhos % rln * v(k) * A(n) * R(k, n) * I3(C3) / det;
         }
 
         // sigma: now starting with the conjugate terms
@@ -347,37 +346,37 @@ void propagate(double duration, double dt, double& time,
 
           // first line
           update_C3(C3, C, l, l, j);
-          dskl -= d % slk * Q(j, j) * I3(C3) / det;
+          dskl -= d % slk * v(l) * v(j) * Q(j, j) * I3(C3) / det;
           update_C3(C3, C, l, j, j);
-          dskl += d % slk * Q(l, j) * I3(C3) / det;
+          dskl += d % slk * v(l) * v(j) * Q(l, j) * I3(C3) / det;
 
           // second line
           vec sjk = (vec) sigma.tube(j, k);
           update_C3(C3, C, l, j, j);
-          dskl -= d % sjk * Q(l, l) * I3(C3) / det;
+          dskl -= d % sjk * v(l) * v(j) * Q(l, l) * I3(C3) / det;
           update_C3(C3, C, l, l, j);
-          dskl += d % sjk * Q(l, j) * I3(C3) / det;
+          dskl += d % sjk * v(l) * v(j) * Q(l, j) * I3(C3) / det;
         }
 
         // third line
         update_C3(C3, C, l, l, l);
-        dskl -= d % slk / Q(l, l) * I3(C3);
+        dskl -= d % slk * v(l) * v(l) / Q(l, l) * I3(C3);
 
         for (int n = 0; n < M; n++) {
           double det = Q(l, l) * T(n, n) - pow(R(l, n), 2);
 
           // fourth line
           update_C3(C3, C, l, l, K + n);
-          dskl += d % slk * T(n, n) * I3(C3) / det;
+          dskl += d % slk * v(l) * A(n) * T(n, n) * I3(C3) / det;
           update_C3(C3, C, l, K + n, K + n);
-          dskl -= d % slk * R(l, n) * I3(C3) / det;
+          dskl -= d % slk * v(l) * A(n) * R(l, n) * I3(C3) / det;
 
           // fifth line
           vec rkn = (vec) r.tube(k, n);
           update_C3(C3, C, l, K + n, K + n);
-          dskl += ufu * rhos % rkn * Q(l, l) * I3(C3) / det;
+          dskl += ufu * rhos % rkn * v(l) * A(n) * Q(l, l) * I3(C3) / det;
           update_C3(C3, C, l, l, K + n);
-          dskl -= ufu * rhos % rkn * R(l, n) * I3(C3) / det;
+          dskl -= ufu * rhos % rkn * v(l) * A(n) * R(l, n) * I3(C3) / det;
         }
 
         // multiply the whole of dskl with the linear learning rate
@@ -388,21 +387,21 @@ void propagate(double duration, double dt, double& time,
         for (int n = 0; n < M; n++) {  // teacher
           for (int m = 0; m < M; m++) {  // teacher
             update_C4(C4, C, k, l, K + n, K + m);
-            dskl += dtlr2 * I4(C4);
+            dskl += dtlr2 * v(k) * v(l) * A(n) * A(m) * I4(C4);
           }
         }
 
         for (int j = 0; j < K; j++) {
           for (int m = 0; m < M; m++) {
             update_C4(C4, C, k, l, j, K + m);
-            dskl -= dtlr2 * 2 * I4(C4);
+            dskl -= dtlr2 * 2 * v(k) * v(l) * v(j) * A(m) * I4(C4);
           }
         }
 
         for (int j = 0; j < K; j++) {  // student
           for (int a = 0; a < K; a++) {  // student
             update_C4(C4, C, k, l, j, a);
-            dskl += dtlr2 * I4(C4);
+            dskl += dtlr2 * v(k) * v(l) * v(j) * v(a) * I4(C4);
           }
         }
 
@@ -419,16 +418,16 @@ void propagate(double duration, double dt, double& time,
         // terms proportional to the learning rate
         for (int n = 0; n < M; n++) { // teacher
           update_C3(C3, C, k, l, K + n);
-          W(k, l) += dt * lr * I3(C3);
+          W(k, l) += dt * lr * v(k) * A(n) * I3(C3);
           update_C3(C3, C, l, k, K + n);
-          W(k, l) += dt * lr * I3(C3);
+          W(k, l) += dt * lr * v(l) * A(n) * I3(C3);
         }
 
         for (int j = 0; j < K; j++) { // student
           update_C3(C3, C, k, l, j);
-          W(k, l) -= dt * lr * I3(C3);
+          W(k, l) -= dt * lr * v(k) * v(j) * I3(C3);
           update_C3(C3, C, l, k, j);
-          W(k, l) -= dt * lr * I3(C3);
+          W(k, l) -= dt * lr * v(l) * v(j) * I3(C3);
         }
         
         // W terms quadratic in the learning rate
@@ -436,26 +435,44 @@ void propagate(double duration, double dt, double& time,
         for (int n = 0; n < M; n++) {  // teacher
           for (int m = 0; m < M; m++) {  // teacher
             update_C4(C4, C, k, l, K + n, K + m);
-            W(k, l) += dtlr2 * I4(C4);
+            W(k, l) += dtlr2 * v(k) * v(l) * A(n) * A(m) * I4(C4);
           }
         }
 
         for (int j = 0; j < K; j++) {
           for (int m = 0; m < M; m++) {
             update_C4(C4, C, k, l, j, K + m);
-            W(k, l) -= dtlr2 * 2 * I4(C4);
+            W(k, l) -= dtlr2 * 2 * v(k) * v(l) * v(j) * A(m) * I4(C4);
           }
         }
 
         for (int j = 0; j < K; j++) {  // student
           for (int a = 0; a < K; a++) {  // student
             update_C4(C4, C, k, l, j, a);
-            W(k, l) += dtlr2 * I4(C4);
+            W(k, l) += dtlr2 * v(k) * v(l) * v(j) * v(a) * I4(C4);
           }
         }
       }
     }
     W = symmatu(W);
+
+    // integrate v
+    if (both) {
+      vec dv = vec(size(v), fill::zeros);
+      for (int i = 0; i < K; i++) {  // student
+        for (int k = 0; k < K; k++) {  // student
+          update_C2(C2, C, i, k);
+          dv(i) -= dt * lr * v(k) * I2(C2);
+        }
+
+        for (int n = 0; n < M; n++) { // teacher
+          update_C2(C2, C, i, K + n);
+          dv(i) += dt * lr * A(n) * I2(C2);
+        }
+      }
+
+      v += dv;
+    }
 
     // putting it all together to update the order parameters
     sigma += dsigma;
@@ -474,6 +491,7 @@ void propagate(double duration, double dt, double& time,
 
 int main(int argc, char* argv[]) {
   // flags; false=0 and true=1
+  int both = 0;   // train both layers
   int quiet = 0;  // don't print the order parameters to cout
   // other parameters
   int    f         = SIGN;  // manifold-inducing function
@@ -494,6 +512,7 @@ int main(int argc, char* argv[]) {
   static struct option long_options[] = {
     // for documentation of these options, see the definition of the
     // corresponding variables
+    {"both",       no_argument, &both,           1},
     {"quiet",      no_argument, &quiet,          1},
     {"f",       required_argument, 0, 'f'},
     {"g",       required_argument, 0, 'g'},
@@ -621,8 +640,8 @@ int main(int argc, char* argv[]) {
   if (prefix.empty()) {
     char* log_fname;
     asprintf(&log_fname,
-             "hmm_ode_sgn_%s_%s_delta%g_M%d_K%d_lr%g_i%d_steps%g_dt%g_s%d.dat",
-             g_name, g_name, delta, M, K, lr, init, max_steps, dt, seed);
+             "hmm_ode_sgn_%s_%s_%sdelta%g_M%d_K%d_lr%g_i%d_steps%g_dt%g_s%d.dat",
+             g_name, g_name, (both ? "both_" : ""), delta, M, K, lr, init, max_steps, dt, seed);
     logfile = fopen(log_fname, "w");
   } else {
     string log_fname = prefix;
@@ -663,6 +682,10 @@ int main(int argc, char* argv[]) {
     bool ok = sigma.load(prefix);
     prefix.replace(prefix.end()-11, prefix.end(), "_W0.dat");
     ok = ok && W.load(prefix);
+    prefix.replace(prefix.end()-7, prefix.end(), "_v0.dat");
+    ok = ok && v.load(prefix);
+    prefix.replace(prefix.end()-7, prefix.end(), "_A0.dat");
+    ok = ok && A.load(prefix);
     prefix.replace(prefix.end()-7, prefix.end(), "_r0.dat");
     ok = ok && r.load(prefix);
     prefix.replace(prefix.end()-7, prefix.end(), "_rhos.dat");
@@ -729,6 +752,51 @@ int main(int argc, char* argv[]) {
   print_times(0) = 0;
   vec durations = diff(print_times);
 
+  // print the status header
+  std::ostringstream header;
+  header << "0 time, 1 eg, 2 et, 3 diff, " << endl;
+  int column = 4;
+  for (int k = 0; k < K; k++) {
+    for (int l = k; l < K; l++) {
+      header << column << " Q(" << k << ", " << l << "), ";
+      column++;
+    }
+  }
+  for (int k = 0; k < K; k++) {
+    for (int m = 0; m < M; m++) {
+      header << column << " R(" << k << ", " << m << "), ";
+      column++;
+    }
+  }
+  for (int m = 0; m < M; m++) {
+    for (int n = m; n < M; n++) {
+      header << column << " T(" << m << ", " << n << "), ";
+      column++;
+    }
+  }
+  for (int m = 0; m < M; m++) {
+    header << column << " A(" << m << "), ";
+    column++;
+  }
+  for (int k = 0; k < K; k++) {
+    header << column << " v(" << k << "), ";
+    column++;
+  }
+  for (int k = 0; k < K; k++) {
+    for (int l = k; l < K; l++) {
+      header << column << " Sigma(" << k << ", " << l << "), ";
+      column++;
+    }
+  }
+  for (int k = 0; k < K; k++) {
+    for (int l = k; l < K; l++) {
+      header << column << " W(" << k << ", " << l << "), ";
+      column++;
+    }
+  }
+  std::string header_string = header.str();
+  cout << header_string << endl;
+
   chrono::steady_clock::time_point begin = chrono::steady_clock::now();
 
   double t = 0;
@@ -739,7 +807,7 @@ int main(int argc, char* argv[]) {
     //                     Q, R, T, A, v);
     std::ostringstream msg;
     msg << t << ", " << eg << ", " << datum::nan << ", " << datum::nan << ", ";
-
+    
     for (int k = 0; k < K; k++) {
       for (int l = k; l < K; l++) {
         msg << Q(k, l) << ", ";
@@ -782,7 +850,7 @@ int main(int argc, char* argv[]) {
       break;
     } else {
       propagate(duration, dt, t, Sigma, W, Q, R, T, tildeT, A, v, sigma, r, rhos,
-                I3_fun, I4_fun, delta, lr, fu2, ufu, ufu_2);
+                I2_fun, I3_fun, I4_fun, delta, lr, fu2, ufu, ufu_2, both);
     }
   }
   if (!converged) {

@@ -410,6 +410,10 @@ int main(int argc, char* argv[]) {
       mat T0 = 1. / D * B * B.t();
       fname.replace(fname.end()-7, fname.end(), "_T0.dat");
       T0.save(fname, arma_binary);
+      fname.replace(fname.end()-7, fname.end(), "_v0.dat");
+      v.save(fname, arma_binary);
+      fname.replace(fname.end()-7, fname.end(), "_A0.dat");
+      A.save(fname, arma_binary);
       mat tildeT0 = 1. / D * B_tau * diagmat(rhos) * B_tau.t();
       fname.replace(fname.end()-7, fname.end(), "_tildeT0.dat");
       tildeT0.save(fname, arma_binary);
