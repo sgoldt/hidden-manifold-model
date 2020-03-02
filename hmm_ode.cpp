@@ -3,9 +3,10 @@
  *
  * Author:  Sebastian Goldt <goldt.sebastian@gmail.com>
  *
- * Version: 0.1
+ * Version: 0.2
  *
- * Date:    September 2019
+ * Date:    December 2019
+ *          March    2020
  */
 
 #include <cmath>
@@ -29,7 +30,7 @@ const char * usage = R"USAGE(
 This tool integrates the equations of motion that describe the generalisation
 dynamics of two-layer neural networks in the hidden manifold problem.
 
-usage: lowdim_ode.exe [-h] [-M M] [-K K] [--lr LR]
+usage: hmm_ode.exe [-h] [-M M] [-K K] [--lr LR]
                         [--dt DT] [--steps STEPS] [--quiet]
 
 
@@ -236,12 +237,14 @@ void propagate(double duration, double dt, double& time,
 
     // integrate r
     cube dr = cube(size(r), fill::zeros);
-    #pragma omp parallel for
+    int m;
+    #pragma omp parallel for collapse(2) private(m)
     for (int k = 0; k < K; k++) {
-      // reduced cov matrices for 2, 3, and 4-point correlations
-      mat C3 = zeros<mat>(3, 3);
-      mat C4 = zeros<mat>(4, 4);
-      for (int m = 0; m < M; m++) {
+      for (m = 0; m < M; m++) {
+        // reduced cov matrices for 3- and 4-point correlations
+        mat C3 = zeros<mat>(3, 3);
+        mat C4 = zeros<mat>(4, 4);
+
         vec rkm = (vec) r.tube(k, m);
         vec drkm = vec(size(rkm), fill::zeros);
         for (int j = 0; j < K; j++) {
@@ -289,173 +292,177 @@ void propagate(double duration, double dt, double& time,
 
     // integrate sigma
     cube dsigma = cube(size(sigma));
+    int num_elems = K  * (K + 1) / 2;  // number of elements in triu
     #pragma omp parallel for
-    for (int k = 0; k < K; k++) {
+    for (int idx = 0; idx < num_elems; idx++) {
+      // map the index to a row and a column
+      // algorithm courtesy of Z boson https://stackoverflow.com/a/28483812
+      int k = idx % (K + 1);
+      int l = idx / (K + 1);
+      if (k > l) {
+        k = K - k;
+        l = K  - l - 1;
+      }
+      
       // reduced cov matrices for 3- and 4-point correlations
       mat C3 = zeros<mat>(3, 3);
       mat C4 = zeros<mat>(4, 4);
-      for (int l = k; l < K; l++) {
-        vec skl = (vec) sigma.tube(k, l);
-        vec dskl = vec(size(skl), fill::zeros);
-        for (int j = 0; j < K; j++) {
-          if (j == k)
-            continue;
-          double det = Q(j, j) * Q(k, k) - pow(Q(k, j), 2);
 
-          // first line
-          update_C3(C3, C, k, k, j);
-          dskl -= d % skl * v(k) * v(j) * Q(j, j) * I3(C3) / det;
-          update_C3(C3, C, k, j, j);
-          dskl += d % skl * v(k) * v(j) * Q(k, j) * I3(C3) / det;
+      vec skl = (vec) sigma.tube(k, l);
+      vec dskl = vec(size(skl), fill::zeros);
+      for (int j = 0; j < K; j++) {
+        if (j == k)
+          continue;
+        double det = Q(j, j) * Q(k, k) - pow(Q(k, j), 2);
 
-          // second line
-          vec sjl = (vec) sigma.tube(j, l);
-          update_C3(C3, C, k, j, j);
-          dskl -= d % sjl * v(k) * v(j) * Q(k, k) * I3(C3) / det;
-          update_C3(C3, C, k, k, j);
-          dskl += d % sjl * v(k) * v(j) * Q(k, j) * I3(C3) / det;
+        // first line
+        update_C3(C3, C, k, k, j);
+        dskl -= d % skl * v(k) * v(j) * Q(j, j) * I3(C3) / det;
+        update_C3(C3, C, k, j, j);
+        dskl += d % skl * v(k) * v(j) * Q(k, j) * I3(C3) / det;
+
+        // second line
+        vec sjl = (vec) sigma.tube(j, l);
+        update_C3(C3, C, k, j, j);
+        dskl -= d % sjl * v(k) * v(j) * Q(k, k) * I3(C3) / det;
+        update_C3(C3, C, k, k, j);
+        dskl += d % sjl * v(k) * v(j) * Q(k, j) * I3(C3) / det;
+      }
+
+      // third line
+      update_C3(C3, C, k, k, k);
+      dskl -= d % skl * v(k) * v(k) / Q(k, k) * I3(C3);
+
+      for (int n = 0; n < M; n++) {
+        double det = Q(k, k) * T(n, n) - pow(R(k, n), 2);
+
+        // fourth line
+        update_C3(C3, C, k, k, K + n);
+        dskl += d % skl * v(k) * A(n) * T(n, n) * I3(C3) / det;
+        update_C3(C3, C, k, K + n, K + n);
+        dskl -= d % skl * v(k) * A(n) * R(k, n) * I3(C3) / det;
+
+        // fifth line
+        vec rln = (vec) r.tube(l, n);
+        update_C3(C3, C, k, K + n, K + n);
+        dskl += ufu * rhos % rln * v(k) * A(n) * Q(k, k) * I3(C3) / det;
+        update_C3(C3, C, k, k, K + n);
+        dskl -= ufu * rhos % rln * v(k) * A(n) * R(k, n) * I3(C3) / det;
+      }
+
+      // sigma: now starting with the conjugate terms
+      vec slk = (vec) sigma.tube(l, k);
+
+      for (int j = 0; j < K; j++) {
+        if (j == l)
+          continue;
+        double det = Q(j, j) * Q(l, l) - pow(Q(l, j), 2);
+
+        // first line
+        update_C3(C3, C, l, l, j);
+        dskl -= d % slk * v(l) * v(j) * Q(j, j) * I3(C3) / det;
+        update_C3(C3, C, l, j, j);
+        dskl += d % slk * v(l) * v(j) * Q(l, j) * I3(C3) / det;
+
+        // second line
+        vec sjk = (vec) sigma.tube(j, k);
+        update_C3(C3, C, l, j, j);
+        dskl -= d % sjk * v(l) * v(j) * Q(l, l) * I3(C3) / det;
+        update_C3(C3, C, l, l, j);
+        dskl += d % sjk * v(l) * v(j) * Q(l, j) * I3(C3) / det;
+      }
+
+      // third line
+      update_C3(C3, C, l, l, l);
+      dskl -= d % slk * v(l) * v(l) / Q(l, l) * I3(C3);
+
+      for (int n = 0; n < M; n++) {
+        double det = Q(l, l) * T(n, n) - pow(R(l, n), 2);
+
+        // fourth line
+        update_C3(C3, C, l, l, K + n);
+        dskl += d % slk * v(l) * A(n) * T(n, n) * I3(C3) / det;
+        update_C3(C3, C, l, K + n, K + n);
+        dskl -= d % slk * v(l) * A(n) * R(l, n) * I3(C3) / det;
+
+        // fifth line
+        vec rkn = (vec) r.tube(k, n);
+        update_C3(C3, C, l, K + n, K + n);
+        dskl += ufu * rhos % rkn * v(l) * A(n) * Q(l, l) * I3(C3) / det;
+        update_C3(C3, C, l, l, K + n);
+        dskl -= ufu * rhos % rkn * v(l) * A(n) * R(l, n) * I3(C3) / det;
+      }
+
+      // multiply the whole of dskl with the linear learning rate
+      dskl *= dt * lr / delta;
+
+      // now for the quadratic part!
+      vec dtlr2rho = dt * pow(lr, 2) * (zeta * rhos + ufu_2 / delta * pow(rhos, 2));
+      for (int n = 0; n < M; n++) {  // teacher
+        for (int m = 0; m < M; m++) {  // teacher
+          update_C4(C4, C, k, l, K + n, K + m);
+          dskl += dtlr2rho * v(k) * v(l) * A(n) * A(m) * I4(C4);
         }
+      }
 
-        // third line
-        update_C3(C3, C, k, k, k);
-        dskl -= d % skl * v(k) * v(k) / Q(k, k) * I3(C3);
-
-        for (int n = 0; n < M; n++) {
-          double det = Q(k, k) * T(n, n) - pow(R(k, n), 2);
-
-          // fourth line
-          update_C3(C3, C, k, k, K + n);
-          dskl += d % skl * v(k) * A(n) * T(n, n) * I3(C3) / det;
-          update_C3(C3, C, k, K + n, K + n);
-          dskl -= d % skl * v(k) * A(n) * R(k, n) * I3(C3) / det;
-
-          // fifth line
-          vec rln = (vec) r.tube(l, n);
-          update_C3(C3, C, k, K + n, K + n);
-          dskl += ufu * rhos % rln * v(k) * A(n) * Q(k, k) * I3(C3) / det;
-          update_C3(C3, C, k, k, K + n);
-          dskl -= ufu * rhos % rln * v(k) * A(n) * R(k, n) * I3(C3) / det;
+      for (int j = 0; j < K; j++) {
+        for (int m = 0; m < M; m++) {
+          update_C4(C4, C, k, l, j, K + m);
+          dskl -= dtlr2rho * 2 * v(k) * v(l) * v(j) * A(m) * I4(C4);
         }
+      }
 
-        // sigma: now starting with the conjugate terms
-        vec slk = (vec) sigma.tube(l, k);
-
-        for (int j = 0; j < K; j++) {
-          if (j == l)
-            continue;
-          double det = Q(j, j) * Q(l, l) - pow(Q(l, j), 2);
-
-          // first line
-          update_C3(C3, C, l, l, j);
-          dskl -= d % slk * v(l) * v(j) * Q(j, j) * I3(C3) / det;
-          update_C3(C3, C, l, j, j);
-          dskl += d % slk * v(l) * v(j) * Q(l, j) * I3(C3) / det;
-
-          // second line
-          vec sjk = (vec) sigma.tube(j, k);
-          update_C3(C3, C, l, j, j);
-          dskl -= d % sjk * v(l) * v(j) * Q(l, l) * I3(C3) / det;
-          update_C3(C3, C, l, l, j);
-          dskl += d % sjk * v(l) * v(j) * Q(l, j) * I3(C3) / det;
+      for (int j = 0; j < K; j++) {  // student
+        for (int a = 0; a < K; a++) {  // student
+          update_C4(C4, C, k, l, j, a);
+          dskl += dtlr2rho * v(k) * v(l) * v(j) * v(a) * I4(C4);
         }
+      }
 
-        // third line
-        update_C3(C3, C, l, l, l);
-        dskl -= d % slk * v(l) * v(l) / Q(l, l) * I3(C3);
+      dsigma.tube(k, l) = dskl;
+      if (k != l) {
+        dsigma.tube(l, k) = dskl;
+      }
 
-        for (int n = 0; n < M; n++) {
-          double det = Q(l, l) * T(n, n) - pow(R(l, n), 2);
+      // --------------------
+      // integrate W
+      // --------------------
 
-          // fourth line
-          update_C3(C3, C, l, l, K + n);
-          dskl += d % slk * v(l) * A(n) * T(n, n) * I3(C3) / det;
-          update_C3(C3, C, l, K + n, K + n);
-          dskl -= d % slk * v(l) * A(n) * R(l, n) * I3(C3) / det;
+      // terms proportional to the learning rate
+      for (int n = 0; n < M; n++) { // teacher
+        update_C3(C3, C, k, l, K + n);
+        W(k, l) += dt * lr * v(k) * A(n) * I3(C3);
+        update_C3(C3, C, l, k, K + n);
+        W(k, l) += dt * lr * v(l) * A(n) * I3(C3);
+      }
 
-          // fifth line
-          vec rkn = (vec) r.tube(k, n);
-          update_C3(C3, C, l, K + n, K + n);
-          dskl += ufu * rhos % rkn * v(l) * A(n) * Q(l, l) * I3(C3) / det;
-          update_C3(C3, C, l, l, K + n);
-          dskl -= ufu * rhos % rkn * v(l) * A(n) * R(l, n) * I3(C3) / det;
-        }
-
-        // multiply the whole of dskl with the linear learning rate
-        dskl *= dt * lr / delta;
-
-        // now for the quadratic part!
-        vec dtlr2 = dt * pow(lr, 2) * (zeta * rhos + ufu_2 / delta * pow(rhos, 2));
-        for (int n = 0; n < M; n++) {  // teacher
-          for (int m = 0; m < M; m++) {  // teacher
-            update_C4(C4, C, k, l, K + n, K + m);
-            dskl += dtlr2 * v(k) * v(l) * A(n) * A(m) * I4(C4);
-          }
-        }
-
-        for (int j = 0; j < K; j++) {
-          for (int m = 0; m < M; m++) {
-            update_C4(C4, C, k, l, j, K + m);
-            dskl -= dtlr2 * 2 * v(k) * v(l) * v(j) * A(m) * I4(C4);
-          }
-        }
-
-        for (int j = 0; j < K; j++) {  // student
-          for (int a = 0; a < K; a++) {  // student
-            update_C4(C4, C, k, l, j, a);
-            dskl += dtlr2 * v(k) * v(l) * v(j) * v(a) * I4(C4);
-          }
-        }
-
-        dsigma.tube(k, l) = dskl;
-        if (k != l) {
-          dsigma.tube(l, k) = dskl;
-        }
-      } // end of sigma l loop
-    } // end of sigma k loop
-
-    // integrate W
-    #pragma omp parallel for
-    for (int k = 0; k < K; k++) {  // student
-      // reduced cov matrices for 2, 3, and 4-point correlations
-      mat C3 = zeros<mat>(3, 3);
-      mat C4 = zeros<mat>(4, 4);
-      for (int l = k; l < K; l++) {  // student
-        // terms proportional to the learning rate
-        for (int n = 0; n < M; n++) { // teacher
-          update_C3(C3, C, k, l, K + n);
-          W(k, l) += dt * lr * v(k) * A(n) * I3(C3);
-          update_C3(C3, C, l, k, K + n);
-          W(k, l) += dt * lr * v(l) * A(n) * I3(C3);
-        }
-
-        for (int j = 0; j < K; j++) { // student
-          update_C3(C3, C, k, l, j);
-          W(k, l) -= dt * lr * v(k) * v(j) * I3(C3);
-          update_C3(C3, C, l, k, j);
-          W(k, l) -= dt * lr * v(l) * v(j) * I3(C3);
-        }
+      for (int j = 0; j < K; j++) { // student
+        update_C3(C3, C, k, l, j);
+        W(k, l) -= dt * lr * v(k) * v(j) * I3(C3);
+        update_C3(C3, C, l, k, j);
+        W(k, l) -= dt * lr * v(l) * v(j) * I3(C3);
+      }
         
-        // W terms quadratic in the learning rate
-        double dtlr2 = dt * fu2 * pow(lr, 2);
-        for (int n = 0; n < M; n++) {  // teacher
-          for (int m = 0; m < M; m++) {  // teacher
-            update_C4(C4, C, k, l, K + n, K + m);
-            W(k, l) += dtlr2 * v(k) * v(l) * A(n) * A(m) * I4(C4);
-          }
+      // W terms quadratic in the learning rate
+      double dtlr2 = dt * fu2 * pow(lr, 2);
+      for (int n = 0; n < M; n++) {  // teacher
+        for (int m = 0; m < M; m++) {  // teacher
+          update_C4(C4, C, k, l, K + n, K + m);
+          W(k, l) += dtlr2 * v(k) * v(l) * A(n) * A(m) * I4(C4);
         }
+      }
 
-        for (int j = 0; j < K; j++) {
-          for (int m = 0; m < M; m++) {
-            update_C4(C4, C, k, l, j, K + m);
-            W(k, l) -= dtlr2 * 2 * v(k) * v(l) * v(j) * A(m) * I4(C4);
-          }
+      for (int j = 0; j < K; j++) {
+        for (int m = 0; m < M; m++) {
+          update_C4(C4, C, k, l, j, K + m);
+          W(k, l) -= dtlr2 * 2 * v(k) * v(l) * v(j) * A(m) * I4(C4);
         }
+      }
 
-        for (int j = 0; j < K; j++) {  // student
-          for (int a = 0; a < K; a++) {  // student
-            update_C4(C4, C, k, l, j, a);
-            W(k, l) += dtlr2 * v(k) * v(l) * v(j) * v(a) * I4(C4);
-          }
+      for (int j = 0; j < K; j++) {  // student
+        for (int a = 0; a < K; a++) {  // student
+          update_C4(C4, C, k, l, j, a);
+          W(k, l) += dtlr2 * v(k) * v(l) * v(j) * v(a) * I4(C4);
         }
       }
     }
@@ -463,7 +470,7 @@ void propagate(double duration, double dt, double& time,
 
     // integrate v
     if (both) {
-      // reduced cov matrices for 3- and 4-point correlations
+      // reduced cov matrices for 2-point correlations
       mat C2 = zeros<mat>(2, 2);
 
       vec dv = vec(size(v), fill::zeros);
@@ -648,7 +655,7 @@ int main(int argc, char* argv[]) {
   if (prefix.empty()) {
     char* log_fname;
     asprintf(&log_fname,
-             "hmm_odep_sgn_%s_%s_%sdelta%g_M%d_K%d_lr%g_i%d_steps%g_dt%g_s%d.dat",
+             "hmm_ode_sgn_%s_%s_%sdelta%g_M%d_K%d_lr%g_i%d_steps%g_dt%g_s%d.dat",
              g_name, g_name, (both ? "both_" : ""), delta, M, K, lr, init, max_steps, dt, seed);
     logfile = fopen(log_fname, "w");
   } else {
@@ -672,7 +679,7 @@ int main(int argc, char* argv[]) {
   fprintf(logfile, "%s", welcome_string.c_str());
 
   // "original" order parameters
-  const int N = 8000;
+  int N = 10000;
   int D = round(delta * N);
   mat Sigma = mat(K, K);
   cube sigma = cube(K, K, D, fill::zeros);
@@ -709,8 +716,10 @@ int main(int argc, char* argv[]) {
       cout << "# Loaded all initial conditions successfully." << endl;
     }
   } else if (init == INIT_LARGE or init == INIT_SMALL) {
+    int N = 10000;
+    double prefactor = (init == INIT_LARGE) ? 1 : 1e-3;
     int D = round(delta * N);
-    mat w = randn<mat>(K, N);
+    mat w = prefactor *  randn<mat>(K, N);
     mat B = randn<mat>(M, D);
     mat F = randn<mat>(N, D);
 
@@ -814,38 +823,36 @@ int main(int argc, char* argv[]) {
     //                     Q, R, T, A, v);
     std::ostringstream msg;
     msg << t << ", " << eg << ", " << datum::nan << ", " << datum::nan << ", ";
-
-    if (!quiet) {
-      for (int k = 0; k < K; k++) {
-        for (int l = k; l < K; l++) {
-          msg << Q(k, l) << ", ";
-        }
+    
+    for (int k = 0; k < K; k++) {
+      for (int l = k; l < K; l++) {
+        msg << Q(k, l) << ", ";
       }
-      for (int k = 0; k < K; k++) {
-        for (int m = 0; m < M; m++) {
-          msg << R(k, m) << ", ";
-        }
-      }
+    }
+    for (int k = 0; k < K; k++) {
       for (int m = 0; m < M; m++) {
-        for (int n = m; n < M; n++) {
-          msg << T(m, n) << ", ";
-        }
+        msg << R(k, m) << ", ";
       }
-      for (int m = 0; m < M; m++) {
-        msg << A(m) << ", ";
+    }
+    for (int m = 0; m < M; m++) {
+      for (int n = m; n < M; n++) {
+        msg << T(m, n) << ", ";
       }
-      for (int k = 0; k < K; k++) {
-        msg << v(k) << ", ";
+    }
+    for (int m = 0; m < M; m++) {
+      msg << A(m) << ", ";
+    }
+    for (int k = 0; k < K; k++) {
+      msg << v(k) << ", ";
+    }
+    for (int k = 0; k < K; k++) {
+      for (int l = k; l < K; l++) {
+        msg << Sigma(k, l) << ", ";
       }
-      for (int k = 0; k < K; k++) {
-        for (int l = k; l < K; l++) {
-          msg << Sigma(k, l) << ", ";
-        }
-      }
-      for (int k = 0; k < K; k++) {
-        for (int l = k; l < K; l++) {
-          msg << W(k, l) << ", ";
-        }
+    }
+    for (int k = 0; k < K; k++) {
+      for (int l = k; l < K; l++) {
+        msg << W(k, l) << ", ";
       }
     }
     std::string msg_str = msg.str();
