@@ -1,5 +1,5 @@
 /*
- * File:    lowdim_ode.cpp
+ * File:    hmm_ode.cpp
  *
  * Author:  Sebastian Goldt <goldt.sebastian@gmail.com>
  *
@@ -30,8 +30,7 @@ This tool integrates the equations of motion that describe the generalisation
 dynamics of two-layer neural networks in the hidden manifold problem.
 
 usage: lowdim_ode.exe [-h] [-M M] [-K K] [--lr LR]
-                        [--overlap OVERLAP] [--dt DT] [--steps STEPS]
-                        [--quiet]
+                        [--dt DT] [--steps STEPS] [--quiet]
 
 
 optional arguments:
@@ -46,8 +45,6 @@ optional arguments:
   --init INIT           weight initialisation:
                            1: large initial weights, with initial overlaps from --overlaps
                            2: small initial weights
-                           3: informed initialisation; only for K \ge M.
-                           4: denoising
   --prefix              file prefix to load initial conditions from
   --both                train both layers.
   --uniform A           make all of the teacher's second layer weights equal to
@@ -229,10 +226,6 @@ void propagate(double duration, double dt, double& time,
   vec d = zeta * delta + ufu_2 * rhos;
     
   mat C = zeros<mat>(K + M, K + M);  // full covariance matrix C
-  // reduced cov matrices for 2, 3, and 4-point correlations
-  mat C2 = zeros<mat>(2, 2);
-  mat C3 = zeros<mat>(3, 3);
-  mat C4 = zeros<mat>(4, 4);
 
   while(propagation_time < duration) {
     // update the full covariance matrix of all local fields
@@ -243,7 +236,11 @@ void propagate(double duration, double dt, double& time,
 
     // integrate r
     cube dr = cube(size(r), fill::zeros);
+    #pragma omp parallel for
     for (int k = 0; k < K; k++) {
+      // reduced cov matrices for 2, 3, and 4-point correlations
+      mat C3 = zeros<mat>(3, 3);
+      mat C4 = zeros<mat>(4, 4);
       for (int m = 0; m < M; m++) {
         vec rkm = (vec) r.tube(k, m);
         vec drkm = vec(size(rkm), fill::zeros);
@@ -292,7 +289,11 @@ void propagate(double duration, double dt, double& time,
 
     // integrate sigma
     cube dsigma = cube(size(sigma));
+    #pragma omp parallel for
     for (int k = 0; k < K; k++) {
+      // reduced cov matrices for 3- and 4-point correlations
+      mat C3 = zeros<mat>(3, 3);
+      mat C4 = zeros<mat>(4, 4);
       for (int l = k; l < K; l++) {
         vec skl = (vec) sigma.tube(k, l);
         vec dskl = vec(size(skl), fill::zeros);
@@ -409,11 +410,15 @@ void propagate(double duration, double dt, double& time,
         if (k != l) {
           dsigma.tube(l, k) = dskl;
         }
-      } // end of sigma second l loop
-    } // end of sigma second k loop
+      } // end of sigma l loop
+    } // end of sigma k loop
 
     // integrate W
+    #pragma omp parallel for
     for (int k = 0; k < K; k++) {  // student
+      // reduced cov matrices for 2, 3, and 4-point correlations
+      mat C3 = zeros<mat>(3, 3);
+      mat C4 = zeros<mat>(4, 4);
       for (int l = k; l < K; l++) {  // student
         // terms proportional to the learning rate
         for (int n = 0; n < M; n++) { // teacher
@@ -458,6 +463,9 @@ void propagate(double duration, double dt, double& time,
 
     // integrate v
     if (both) {
+      // reduced cov matrices for 3- and 4-point correlations
+      mat C2 = zeros<mat>(2, 2);
+
       vec dv = vec(size(v), fill::zeros);
       for (int i = 0; i < K; i++) {  // student
         for (int k = 0; k < K; k++) {  // student
@@ -640,7 +648,7 @@ int main(int argc, char* argv[]) {
   if (prefix.empty()) {
     char* log_fname;
     asprintf(&log_fname,
-             "hmm_ode_sgn_%s_%s_%sdelta%g_M%d_K%d_lr%g_i%d_steps%g_dt%g_s%d.dat",
+             "hmm_odep_sgn_%s_%s_%sdelta%g_M%d_K%d_lr%g_i%d_steps%g_dt%g_s%d.dat",
              g_name, g_name, (both ? "both_" : ""), delta, M, K, lr, init, max_steps, dt, seed);
     logfile = fopen(log_fname, "w");
   } else {
@@ -664,7 +672,7 @@ int main(int argc, char* argv[]) {
   fprintf(logfile, "%s", welcome_string.c_str());
 
   // "original" order parameters
-  int N = 10000;
+  const int N = 8000;
   int D = round(delta * N);
   mat Sigma = mat(K, K);
   cube sigma = cube(K, K, D, fill::zeros);
@@ -674,8 +682,8 @@ int main(int argc, char* argv[]) {
   cube r = cube(K, M, D, fill::zeros);
   mat T = mat(M, M);
   mat tildeT = mat(M, M);  // self-overlap of rotated teacher vectors
-  vec A = ones(M);  // not trained atm
-  vec v = ones(K);  // not trained atm
+  vec A = ones(M);
+  vec v = ones(K);
   vec rhos;  // vector with the eigenvalues rho
   if (!prefix.empty()) {
     prefix.append("_sigma0.dat");
@@ -700,8 +708,7 @@ int main(int argc, char* argv[]) {
     } else {
       cout << "# Loaded all initial conditions successfully." << endl;
     }
-  } else if (init == INIT_LARGE) {
-    int N = 10000;
+  } else if (init == INIT_LARGE or init == INIT_SMALL) {
     int D = round(delta * N);
     mat w = randn<mat>(K, N);
     mat B = randn<mat>(M, D);
@@ -807,36 +814,38 @@ int main(int argc, char* argv[]) {
     //                     Q, R, T, A, v);
     std::ostringstream msg;
     msg << t << ", " << eg << ", " << datum::nan << ", " << datum::nan << ", ";
-    
-    for (int k = 0; k < K; k++) {
-      for (int l = k; l < K; l++) {
-        msg << Q(k, l) << ", ";
+
+    if (!quiet) {
+      for (int k = 0; k < K; k++) {
+        for (int l = k; l < K; l++) {
+          msg << Q(k, l) << ", ";
+        }
       }
-    }
-    for (int k = 0; k < K; k++) {
+      for (int k = 0; k < K; k++) {
+        for (int m = 0; m < M; m++) {
+          msg << R(k, m) << ", ";
+        }
+      }
       for (int m = 0; m < M; m++) {
-        msg << R(k, m) << ", ";
+        for (int n = m; n < M; n++) {
+          msg << T(m, n) << ", ";
+        }
       }
-    }
-    for (int m = 0; m < M; m++) {
-      for (int n = m; n < M; n++) {
-        msg << T(m, n) << ", ";
+      for (int m = 0; m < M; m++) {
+        msg << A(m) << ", ";
       }
-    }
-    for (int m = 0; m < M; m++) {
-      msg << A(m) << ", ";
-    }
-    for (int k = 0; k < K; k++) {
-      msg << v(k) << ", ";
-    }
-    for (int k = 0; k < K; k++) {
-      for (int l = k; l < K; l++) {
-        msg << Sigma(k, l) << ", ";
+      for (int k = 0; k < K; k++) {
+        msg << v(k) << ", ";
       }
-    }
-    for (int k = 0; k < K; k++) {
-      for (int l = k; l < K; l++) {
-        msg << W(k, l) << ", ";
+      for (int k = 0; k < K; k++) {
+        for (int l = k; l < K; l++) {
+          msg << Sigma(k, l) << ", ";
+        }
+      }
+      for (int k = 0; k < K; k++) {
+        for (int l = k; l < K; l++) {
+          msg << W(k, l) << ", ";
+        }
       }
     }
     std::string msg_str = msg.str();
