@@ -47,9 +47,19 @@ optional arguments:
                            1: large initial weights, with initial overlaps from --overlaps
                            2: small initial weights
   --prefix              file prefix to load initial conditions from
-  --both                train both layers.
+  --both                train both layers of the student network.
+  --normalise           divides 2nd layer weights by M and K for teacher and
+                          student, resp. Overwritten by --both for the student
+                          (2nd layer weights of the student are initialised
+                           according to --init in that case).
+  --meanfield           divides 2nd layer weights by sqrt(M) and sqrt(K) for teacher and
+                          student, resp. Overwritten by --both for the student
+                          (2nd layer weights of the student are initialised
+                           according to --init in that case).
   --uniform A           make all of the teacher's second layer weights equal to
-                          this value.
+                          this value. If the second layer of the student is not
+                          trained, the second-layer output weights of the student
+                          are also set to this value.
   --dt DT               integration time-step
   -r SEED, --seed SEED  random number generator seed. Default=0
   -q --quiet            be quiet and don't print order parameters to cout.
@@ -296,7 +306,7 @@ void propagate(double duration, double dt, double& time,
     #pragma omp parallel for
     for (int idx = 0; idx < num_elems; idx++) {
       // map the index to a row and a column
-      // algorithm courtesy of Z boson https://stackoverflow.com/a/28483812
+      // algorithm courtesy of user "Z boson" https://stackoverflow.com/a/28483812
       int k = idx % (K + 1);
       int l = idx / (K + 1);
       if (k > l) {
@@ -506,9 +516,12 @@ void propagate(double duration, double dt, double& time,
 
 int main(int argc, char* argv[]) {
   // flags; false=0 and true=1
-  int both = 0;   // train both layers
+  int both         = 0;  // train both layers
+  int normalise    = 0;  // normalise SCM outputs
+  int meanfield    = 0;  // 2nd layer = 1/sqrt(M)
   int quiet = 0;  // don't print the order parameters to cout
   // other parameters
+  int    N         = 10000;  // number of inputs to generate initial conditions
   int    f         = SIGN;  // manifold-inducing function
   int    g         = ERF;   // teacher and student activation function
   int    M         = 2;  // num of teacher's hidden units
@@ -517,6 +530,7 @@ int main(int argc, char* argv[]) {
   double lr        = 0.2;  // learning rate
   double dt        = 0.01;
   int    init      = INIT_LARGE; // initialisation
+  double uniform   = 0;  // value of all weights in the teacher's second layer
   string prefix;  // file name prefix to preload the weights
   double max_steps = 1000;  // max number of gradient updates / N
   int    seed      = 0;  // random number generator seed
@@ -528,9 +542,12 @@ int main(int argc, char* argv[]) {
     // for documentation of these options, see the definition of the
     // corresponding variables
     {"both",       no_argument, &both,           1},
+    {"normalise",  no_argument, &normalise,      1},
+    {"meanfield",  no_argument, &meanfield,      1},
     {"quiet",      no_argument, &quiet,          1},
     {"f",       required_argument, 0, 'f'},
     {"g",       required_argument, 0, 'g'},
+    {"N",       required_argument, 0, 'N'},
     {"M",       required_argument, 0, 'M'},
     {"K",       required_argument, 0, 'K'},
     {"delta",   required_argument, 0, 'z'},
@@ -538,7 +555,7 @@ int main(int argc, char* argv[]) {
     {"dt",      required_argument, 0, 'd'},
     {"init",    required_argument, 0, 'i'},
     {"prefix",  required_argument, 0, 'p'},
-    {"overlap", required_argument, 0, 'o'},
+    {"uniform", required_argument, 0, 'u'},
     {"steps",   required_argument, 0, 'a'},
     {"seed",    required_argument, 0, 'r'},
     {0, 0, 0, 0}
@@ -548,7 +565,7 @@ int main(int argc, char* argv[]) {
     /* getopt_long stores the option index here. */
     int option_index = 0;
 
-    c = getopt_long(argc, argv, "g:M:K:z:l:d:i:f:o:a:r",
+    c = getopt_long(argc, argv, "g:N:M:K:z:l:d:i:f:o:u:a:r",
                     long_options, &option_index);
 
     /* Detect the end of the options. */
@@ -564,6 +581,9 @@ int main(int argc, char* argv[]) {
         break;
       case 'g':
         g = atoi(optarg);
+        break;
+      case 'N':  // input dimension
+        N = atoi(optarg);
         break;
       case 'M':
         M = atoi(optarg);
@@ -585,6 +605,9 @@ int main(int argc, char* argv[]) {
         break;
       case 'd':  // integration time-step
         dt = atof(optarg);
+        break;
+      case 'u':  // value of the second layer weights of the teacher
+        uniform = atof(optarg);
         break;
       case 'a':  // number of steps
         max_steps = atof(optarg);
@@ -653,10 +676,15 @@ int main(int argc, char* argv[]) {
   FILE* logfile;
   const char* g_name = activation_name(g);
   if (prefix.empty()) {
+    char* uniform_desc;
+    asprintf(&uniform_desc, "u%g_", uniform);
     char* log_fname;
     asprintf(&log_fname,
-             "hmm_ode_sgn_%s_%s_%sdelta%g_M%d_K%d_lr%g_i%d_steps%g_dt%g_s%d.dat",
-             g_name, g_name, (both ? "both_" : ""), delta, M, K, lr, init, max_steps, dt, seed);
+             "hmm_ode_sgn_%s_%s_%s_%s%s%sdelta%g_M%d_K%d_lr%g_i%d_steps%g_dt%g_s%d.dat",
+             g_name, g_name, (both ? "both" : "1st"),
+             (normalise ? "norm_" : ""), (meanfield ? "mf_" : ""),
+             (uniform > 0 ? uniform_desc : ""), 
+             delta, M, K, lr, init, max_steps, dt, seed);
     logfile = fopen(log_fname, "w");
   } else {
     string log_fname = prefix;
@@ -666,7 +694,7 @@ int main(int argc, char* argv[]) {
 
   ostringstream welcome;
   welcome << "# This is the HMM ODE integrator for two-layer NN" << endl
-          << "# g1=g2=" << g_name << ", M=" << M << ", K=" << K
+          << "# g1=g2=" << g_name << ", N=" << N << ", M=" << M << ", K=" << K
           << ", steps/N=" << max_steps << ", seed=" << seed << endl
           << "# delta=" << delta << ", lr=" << lr << ", dt=" << dt << endl;
   if (!prefix.empty()) {
@@ -679,7 +707,6 @@ int main(int argc, char* argv[]) {
   fprintf(logfile, "%s", welcome_string.c_str());
 
   // "original" order parameters
-  int N = 10000;
   int D = round(delta * N);
   mat Sigma = mat(K, K);
   cube sigma = cube(K, K, D, fill::zeros);
@@ -689,8 +716,8 @@ int main(int argc, char* argv[]) {
   cube r = cube(K, M, D, fill::zeros);
   mat T = mat(M, M);
   mat tildeT = mat(M, M);  // self-overlap of rotated teacher vectors
-  vec A = ones(M);
-  vec v = ones(K);
+  vec A = vec(M);
+  vec v = vec(K);
   vec rhos;  // vector with the eigenvalues rho
   if (!prefix.empty()) {
     prefix.append("_sigma0.dat");
@@ -715,12 +742,26 @@ int main(int argc, char* argv[]) {
     } else {
       cout << "# Loaded all initial conditions successfully." << endl;
     }
-  } else if (init == INIT_LARGE or init == INIT_SMALL) {
-    int N = 10000;
-    double prefactor = (init == INIT_LARGE) ? 1 : 1e-3;
+  } else {
+    // first initialise the teacher
+    mat B = mat(M, D);
+    init_teacher_randomly(B, A, D, M, uniform, both, normalise, meanfield);
+
+    mat w = mat(K, N);
+    // then the student
+    switch (init) {
+      case INIT_LARGE:
+      case INIT_SMALL:
+      case INIT_MIXED:
+      case INIT_MIXED_NORMALISE: // intentional fall-through
+        init_student_randomly(w, v, N, K, init, uniform, both, normalise, meanfield);
+        break;
+      default:
+        cerr << "Given invalid initialisation code. Will exit now !" << endl;
+        return 1;
+    }
+      
     int D = round(delta * N);
-    mat w = prefactor *  randn<mat>(K, N);
-    mat B = randn<mat>(M, D);
     mat F = randn<mat>(N, D);
 
     mat Omega = 1. / N * F.t() * F;
@@ -745,11 +786,7 @@ int main(int argc, char* argv[]) {
     W = 1. / N * w * w.t();
     T = 1. / D * B * B.t();
     tildeT = 1. / D * B_tau * diagmat(rhos) * B_tau.t();
-  } else {
-    cerr << "--init must be 1 (random init) or 2 (file)."
-         << endl << "Will exit now !" << endl;
-    return 1;
-  }
+  } 
   Sigma = mean(sigma, 2);
   Q = get_Q(Sigma, W, fu2, ufu_2);
   R = ufu * mean(r, 2);
